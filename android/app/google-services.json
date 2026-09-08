@@ -1,0 +1,30 @@
+{
+  "project_info": {
+    "project_number": "909011184334",
+    "firebase_url": "https://myfishapp-4e3e6-default-rtdb.asia-southeast1.firebasedatabase.app",
+    "project_id": "myfishapp-4e3e6",
+    "storage_bucket": "myfishapp-4e3e6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:909011184334:android:bbd849d01d640d70a37e9f",
+        "android_client_info": {
+          "package_name": "com.fyp.my_fish_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiHatyHKL8pKdpH5quGWD3ExcomaYFEXE"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
