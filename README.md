@@ -1,114 +1,151 @@
-# AquaMonitor — IoT Aquaculture Water Quality Monitoring System
-**FYP | UniKL MIIT | Flutter + Firebase + ESP32**
+# 🐟 AquaWatch — IoT Aquaculture Water Quality Monitoring System
+
+**Final Year Project · UniKL MIIT**
+
+AquaWatch is an end-to-end IoT system that monitors water quality for Asian Seabass (*Lates calcarifer*) aquaculture tanks in real time — from physical sensors, through the cloud, to the screens of farm workers and administrators.
+
+![Flutter](https://img.shields.io/badge/Flutter-02569B?style=flat&logo=flutter&logoColor=white)
+![Firebase](https://img.shields.io/badge/Firebase-FFCA28?style=flat&logo=firebase&logoColor=black)
+![ESP32](https://img.shields.io/badge/ESP32-000000?style=flat&logo=espressif&logoColor=white)
+![Dart](https://img.shields.io/badge/Dart-0175C2?style=flat&logo=dart&logoColor=white)
 
 ---
 
-## Architecture
+## 📐 System Architecture
 
 ```
-┌─────────────────┐      ┌──────────────────────────┐
-│  ESP32 firmware  │ ───► │    Firebase RTDB          │
-│  (reads sensors) │      │  tank_status             │
-└─────────────────┘      │  TANK_01/history          │
-                         │  TANK_01/alerts           │
-┌─────────────────┐      │  TANK_01/config/…        │
-│ Admin web app    │ ◄──► │  users                   │
-│ (separate repo)  │      └──────────────────────────┘
-└─────────────────┘              ▲
-                                 │
-                        ┌─────────────────┐
-                        │  Worker app     │  ← this project
-                        │  (Flutter)      │
-                        └─────────────────┘
+┌──────────────────┐         ┌─────────────────────────┐
+│      ESP32       │─write──▶│                         │
+│  (water sensors) │         │    Firebase Realtime    │
+└──────────────────┘         │        Database          │
+                             │                         │
+┌──────────────────┐─r/w────▶│  tank_status             │
+│  ADMIN WEB APP   │         │  TANK_01/sensors         │
+│  (thresholds,    │         │  TANK_01/alerts          │
+│   sensor config, │         │  TANK_01/reports         │
+│   reports)       │         │  TANK_01/config/*        │
+└──────────────────┘         │  users/<uid>             │
+                             └───────────┬─────────────┘
+                                         │ live streams
+                                         ▼
+                             ┌─────────────────────────┐
+                             │    WORKER MOBILE APP    │
+                             │  (Flutter · this repo)  │
+                             └─────────────────────────┘
 ```
 
-- **Worker mobile app (this repo)** — reads live readings + sensor lifespan only.
-- **Admin web app (separate repo)** — sets sensor lifespan (`TANK_01/config/sensor_lifespan`), configures thresholds, and pulls data dumps every 5 minutes.
-- **ESP32 firmware** (`esp32_water_monitor/`) — reads water level sensor, writes readings to Firebase.
+Every component communicates **only through Firebase** — no direct device-to-device links. This makes the system fully decoupled: the admin can change thresholds and the worker's app updates within seconds, with no app update required.
 
 ---
 
-## Project Structure
+## 🧩 Components
 
-```
-lib/
-├── main.dart                    # App entry point, Firebase + Notification init
-├── firebase_options.dart        # Auto-generated Firebase config
-├── models/
-│   ├── sensor_data.dart         # SensorData model (temp, pH, TDS, water level)
-│   └── sensor_lifespan.dart     # SensorLifespan model (months, set by admin)
-├── screen/
-│   ├── login.dart               # Worker login + FCM token save
-│   └── worker_dashboard.dart    # Live readings + lifespan badges
-├── services/
-│   ├── auth_service.dart        # Firebase Auth wrapper
-│   ├── database_service.dart    # Firebase RTDB streams + writes
-│   └── notification_service.dart# FCM init + token save
-└── utils/
-    ├── constants.dart           # Firebase paths, tank ID
-    └── theme.dart               # Material 3 theme
-```
+| Component | Technology | Branch | Status |
+|---|---|---|---|
+| **Worker Mobile App** | Flutter · Firebase | `MobileApp` | ✅ Active |
+| **ESP32 Firmware** | C++ (Arduino) | `MobileApp` (`esp32_water_monitor/`) | ✅ Active |
+| **Admin Web App** | Web · Firebase | separate repo | 🚧 In progress |
 
 ---
 
-## Firebase Database Structure (matches ESP32)
+## 📱 Worker Mobile App Features
+
+- **Live Monitor** — real-time TDS, water level, pH, and temperature with STABLE / CAUTION tags driven by admin-configured thresholds
+- **Connection indicator** — LIVE / OFFLINE badge + signal bars based on sensor data freshness
+- **Sensor Dashboard** — per-sensor lifecycle with unique ID, install date, 45-day lifespan countdown, and automatic status:
+  - 🟢 **ACTIVE** — attached, more than 7 days of lifespan left
+  - 🟡 **REPLACE** — fewer than 7 days remaining (alerts the worker)
+  - 🔴 **INACTIVE** — removed by the operator or expired (alerts the worker)
+- **Alerts** — filterable event history (Critical / Warning / Info) fed by the ESP32 and sensor lifecycle events
+- **Remark Reports** — capture camera photos or attach gallery images, describe incidents with sensor ID, and send to the admin (images stored in Firebase Storage)
+- **Report History** — every sent report with zoomable photo attachments
+- **Notification Settings** — per-operator push, sound, and vibration preferences synced to their account
+- **Worker-only access** — administration lives exclusively in the web app
+
+---
+
+## 🔥 Firebase Realtime Database Structure
 
 ```
-/tank_status/           ← ESP32 writes current readings here
-  waterlevel: 45          (percentage 0–100)
-  timestamp: 1716000000000  (epoch ms)
+tank_status/                 ← live readings (ESP32, every 15s)
+  waterlevel, temperature, ph, tds, timestamp
 
-/TANK_01/
-  history/              ← ESP32 appends every 15 seconds
-    <push_key>/
-      waterlevel, timestamp
-  alerts/               ← ESP32 writes when a threshold is exceeded
-    <push_key>/
-      parameter, value, actionTaken, timestamp
+TANK_01/
+  sensors/<id>/              ← sensor lifecycle (installedAt, lifespanDays,
+    type, installedAt,        45-day countdown, auto-computed status)
+    lifespanDays, expiresAt, status, removedAt
+  alerts/<pushId>/           ← threshold breaches + sensor events
+    parameter, value, actionTaken, severity, timestamp
+  reports/<pushId>/          ← worker remark reports
+    issue, sensorId, notes, imageUrls[], timestamp
   config/
-    thresholds/         ← thresholds for ESP32 alert checks
-      ph_min, ph_max, temp_min, temp_max, tds_max, updated_at
-    sensor_lifespan/    ← set by the admin web app (months)
-      waterLevel: 6
-      temperature: 6
-      ph: 6
-      tds: 6
+    thresholds/              ← ph_min, ph_max, temp_min, temp_max, tds_max
+    sensor_lifespan/         ← per-parameter lifespan (months)
 
-/users/
-  <uid>/
-    fcmToken: "..."     ← worker device token for push alerts
+users/<uid>/
+  name, operatorId, createdAt
+  fcmToken                   ← push notification target
+  settings/                  ← push, sound, vibration
 ```
 
-> **TANK_ID** is set in `lib/utils/constants.dart` → `AppConstants.tankId`.
-> The `sensor_lifespan` fields use camelCase (`waterLevel`, `temperature`, `ph`, `tds`).
+---
+
+## 🚀 Getting Started
+
+### Worker Mobile App
+
+```bash
+cd my_fish_app
+flutter pub get
+flutter run
+```
+
+1. Create a worker account in Firebase Console → **Authentication**
+2. Log in from the app (or register in-app)
+3. Ensure the Firebase project rules allow authenticated reads/writes
+
+### ESP32 Firmware
+
+1. Open `esp32_water_monitor/esp32_water_monitor.ino` in Arduino IDE
+2. Set your Wi-Fi credentials and install the `Firebase ESP Client` library
+3. Flash to the ESP32 — readings appear in Firebase every 15 seconds
+
+> The `TANK_01` tank ID and all Firebase paths are defined in `lib/utils/constants.dart` and must match the ESP32 firmware.
 
 ---
 
-## Worker App — Setup Steps
+## 🗂️ Repository Layout
 
-1. **Open in Android Studio / VS Code**
-   ```
-   flutter pub get
-   ```
+```
+my_fish_app/
+├── lib/
+│   ├── main.dart              # entry point — Firebase + notifications init
+│   ├── models/                # typed data shapes (SensorData, SensorInfo, Report…)
+│   ├── screen/                # one file per screen (login, dashboard, sensors…)
+│   ├── services/              # the ONLY files that touch Firebase
+│   ├── utils/                 # constants (DB paths), theme, navigator key
+│   └── widgets/               # reusable UI elements
+├── esp32_water_monitor/       # ESP32 C++ firmware
+├── android/                   # Android platform config
+└── pubspec.yaml               # dependencies
+```
 
-2. **Verify Tank ID** — `lib/utils/constants.dart` → `tankId` matches your ESP32.
-
-3. **Run on Android**
-   ```
-   flutter run
-   ```
-   `google-services.json` is included for project `myfishapp-4e3e6`.
-
-4. **Create worker accounts in Firebase Console**
-   - Firebase → Authentication → Add user
-   - Log in from the app — the FCM token is saved to `users/<uid>/fcmToken` automatically.
+**Branches:** `MobileApp` holds the application source code. `main` is the project landing page.
 
 ---
 
-## ESP32 Firmware
+## 🛣️ Roadmap
 
-Located at `esp32_water_monitor/esp32_water_monitor.ino`.
+- [ ] Admin web app — Report Dashboard (Receive / Send)
+- [ ] Cloud Function — automatic FCM push on critical alerts & sensor expiry
+- [ ] Temperature, pH, and TDS sensor hardware integration
+- [ ] Background push notification handling
+- [ ] Automated water-change actuation via relay module
 
-- Currently only the **water level** sensor is wired (GPIO 17 power, GPIO 34 signal).
-- Temperature, pH, and TDS are placeholders. To add them, search the file for `NOTE:` — each spot shows what to uncomment.
-- Timestamps use 64-bit epoch milliseconds (via NTP) to avoid overflow.
+---
+
+## 👤 Author
+
+**Muhammad Hareez** — Final Year Project, UniKL MIIT
+
+*Supervised academic project — built for learning and demonstration purposes.*
