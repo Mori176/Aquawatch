@@ -70,7 +70,28 @@ class DatabaseService {
     });
   }
 
-  // ── Sensors ──────────────────────────────────────────────────
+  /// Deletes all alerts except the newest [keep]. Returns how many
+  /// were deleted (0 if there was nothing to clear).
+  Future<int> clearOldAlerts({int keep = 5}) async {
+    final snapshot = await _db.ref(AppConstants.alertsPath).get();
+    if (!snapshot.exists) return 0;
+
+    final map = snapshot.value as Map<dynamic, dynamic>;
+    num tsOf(MapEntry e) =>
+        ((e.value as Map<dynamic, dynamic>)['timestamp'] as num?) ?? 0;
+
+    final entries = map.entries.toList()
+      ..sort((a, b) => tsOf(b).compareTo(tsOf(a)));
+
+    if (entries.length <= keep) return 0;
+
+    // Batch-delete everything older than the newest [keep].
+    final toDelete = <String, dynamic>{
+      for (final e in entries.skip(keep)) e.key.toString(): null,
+    };
+    await _db.ref(AppConstants.alertsPath).update(toDelete);
+    return toDelete.length;
+  }
 
   /// Stream of all tracked sensors from /<TANK_ID>/sensors
   Stream<List<SensorInfo>> streamSensors() {
@@ -85,18 +106,19 @@ class DatabaseService {
     });
   }
 
-  /// Installs a new sensor — starts the 45-day countdown.
+  /// Installs a new sensor — starts its lifespan countdown.
   Future<void> installSensor({
     required String id,
     required String type,
+    int lifespanDays = SensorInfo.defaultLifespanDays,
   }) async {
     final now = DateTime.now();
     await _db.ref('${AppConstants.sensorsPath}/$id').set({
       'type': type,
       'installedAt': now.millisecondsSinceEpoch,
-      'lifespanDays': SensorInfo.defaultLifespanDays,
+      'lifespanDays': lifespanDays,
       'expiresAt': now
-          .add(const Duration(days: SensorInfo.defaultLifespanDays))
+          .add(Duration(days: lifespanDays))
           .millisecondsSinceEpoch,
       'status': 'active',
     });

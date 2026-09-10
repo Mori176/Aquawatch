@@ -1,0 +1,13 @@
+{
+  "name": "aquawatch-functions",
+  "description": "Cloud Functions for AquaWatch — pushes alerts to worker devices",
+  "engines": {
+    "node": "22"
+  },
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "firebase-functions": "^5.1.0"
+  },
+  "private": true
+}

@@ -39,9 +39,11 @@ class DashboardScreen extends StatelessWidget {
                 final tempMin = config.tempMin > 0 ? config.tempMin : 26.0;
                 final tempMax = config.tempMax > 0 ? config.tempMax : 32.0;
                 final tdsMax = config.tdsMax > 0 ? config.tdsMax : 500.0;
+                final waterMin =
+                    config.waterLevelMin > 0 ? config.waterLevelMin : 30.0;
 
                 final isTdsStable = data.tds <= tdsMax;
-                final isWaterStable = data.waterLevel >= 3.0; // fixed baseline
+                final isWaterStable = data.waterLevel >= waterMin;
                 final isPhStable = data.ph >= phMin && data.ph <= phMax;
                 final isTempStable =
                     data.temperature >= tempMin && data.temperature <= tempMax;

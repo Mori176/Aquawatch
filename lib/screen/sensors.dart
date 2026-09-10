@@ -19,6 +19,14 @@ class _SensorsScreenState extends State<SensorsScreen> {
   Timer? _timer;
   bool _loading = true;
 
+  /// Sensors hidden this session (dismissed / being removed) so a stream
+  /// event in flight cannot re-insert the card into the tree.
+  final Set<String> _hiddenIds = {};
+
+  /// Last known status per sensor, kept in memory so time-based
+  /// transitions (active → replace/inactive) alert exactly ONCE.
+  final Map<String, String> _lastKnownStatus = {};
+
   static const _types = ['Water Level', 'Temperature', 'pH', 'TDS'];
 
   @override
@@ -26,14 +34,19 @@ class _SensorsScreenState extends State<SensorsScreen> {
     super.initState();
     _sub = _dbService.streamSensors().listen((sensors) {
       _syncStatus(sensors);
+      if (!mounted) return;
       setState(() {
-        _sensors = sensors;
+        _sensors = sensors
+            .where((s) =>
+                !_hiddenIds.contains(s.id) && s.removedAt == null)
+            .toList();
         _loading = false;
       });
     });
     // Re-evaluate every minute so countdown/status updates without
     // waiting for a Firebase data change.
     _timer = Timer.periodic(const Duration(minutes: 1), (_) {
+      if (!mounted) return;
       _syncStatus(_sensors);
       setState(() {}); // refresh countdown display
     });
@@ -46,23 +59,35 @@ class _SensorsScreenState extends State<SensorsScreen> {
     super.dispose();
   }
 
-  /// State machine: on any status change, echo it to Firebase and log
-  /// an alert when a sensor enters Replace or Inactive.
+  /// Time-based transition detection (active → replace/inactive as the
+  /// countdown ticks down). Alerts and echoes fire exactly once per
+  /// transition thanks to the in-memory _lastKnownStatus guard —
+  /// immune to stream/timer races.
   Future<void> _syncStatus(List<SensorInfo> sensors) async {
     for (final sensor in sensors) {
-      final newStatus = sensor.computedStatus;
-      if (newStatus != sensor.status) {
-        if (newStatus == 'replace' || newStatus == 'inactive') {
-          await _dbService.logSensorAlert(
-              sensorId: sensor.id, status: newStatus);
-        }
-        await _dbService.echoSensorStatus(sensor.id, newStatus);
+      if (_hiddenIds.contains(sensor.id) || sensor.removedAt != null) continue;
+
+      final computed = sensor.computedStatus;
+      final lastKnown = _lastKnownStatus[sensor.id] ??
+          (sensor.status.isEmpty ? computed : sensor.status);
+      _lastKnownStatus[sensor.id] = computed;
+
+      if (computed == lastKnown) continue;
+
+      if (computed == 'replace' || computed == 'inactive') {
+        await _dbService.logSensorAlert(
+            sensorId: sensor.id, status: computed);
       }
+      await _dbService.echoSensorStatus(sensor.id, computed);
     }
   }
 
+  // ── Add / remove ─────────────────────────────────────────────
+
   Future<void> _addSensor() async {
     final idController = TextEditingController();
+    final lifespanController =
+        TextEditingController(text: '${SensorInfo.defaultLifespanDays}');
     String type = _types.first;
 
     final confirmed = await showDialog<bool>(
@@ -89,11 +114,20 @@ class _SensorsScreenState extends State<SensorsScreen> {
                     .toList(),
                 onChanged: (v) => setDialogState(() => type = v ?? _types.first),
               ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: lifespanController,
+                keyboardType: TextInputType.number,
+                decoration: const InputDecoration(
+                  labelText: 'LIFESPAN (DAYS)',
+                  hintText: 'e.g. 45',
+                ),
+              ),
               const SizedBox(height: 8),
               const Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
-                  'A 45-day lifespan countdown starts on install.',
+                  'The countdown starts the moment you install.',
                   style: TextStyle(fontSize: 12, color: AppColors.greyText),
                 ),
               ),
@@ -105,8 +139,8 @@ class _SensorsScreenState extends State<SensorsScreen> {
                 child: const Text('Cancel')),
             ElevatedButton(
               onPressed: () => Navigator.pop(context, true),
-              style: ElevatedButton.styleFrom(
-                  minimumSize: const Size(90, 40)),
+              style:
+                  ElevatedButton.styleFrom(minimumSize: const Size(90, 40)),
               child: const Text('Install'),
             ),
           ],
@@ -120,10 +154,20 @@ class _SensorsScreenState extends State<SensorsScreen> {
       _showSnack('Please enter a sensor ID.');
       return;
     }
-    await _dbService.installSensor(id: id, type: type);
-    if (mounted) _showSnack('Sensor $id installed (45-day countdown started).');
+    final lifespan = int.tryParse(lifespanController.text.trim()) ?? 0;
+    if (lifespan <= 0) {
+      _showSnack('Lifespan must be a whole number of days (at least 1).');
+      return;
+    }
+    _hiddenIds.remove(id);
+    _lastKnownStatus[id] = 'active';
+    await _dbService.installSensor(id: id, type: type, lifespanDays: lifespan);
+    if (mounted) {
+      _showSnack('Sensor $id installed ($lifespan-day countdown started).');
+    }
   }
 
+  /// Confirmation dialog only — returns the worker's choice.
   Future<bool> _confirmRemove(SensorInfo sensor) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -145,10 +189,20 @@ class _SensorsScreenState extends State<SensorsScreen> {
         ],
       ),
     );
-    if (ok == true) {
-      await _dbService.removeSensor(sensor.id);
-    }
     return ok ?? false;
+  }
+
+  /// Performs the removal: hide the card from the tree IMMEDIATELY
+  /// (same frame as the dismiss animation), then persist to Firebase.
+  Future<void> _performRemove(SensorInfo sensor) async {
+    setState(() {
+      _hiddenIds.add(sensor.id);
+      _sensors.removeWhere((s) => s.id == sensor.id);
+    });
+    await _dbService.removeSensor(sensor.id);
+    await _dbService.logSensorAlert(sensorId: sensor.id, status: 'inactive');
+    await _dbService.echoSensorStatus(sensor.id, 'inactive');
+    if (mounted) _showSnack('Sensor ${sensor.id} removed.');
   }
 
   void _showSnack(String message) {
@@ -198,6 +252,7 @@ class _SensorsScreenState extends State<SensorsScreen> {
       key: ValueKey(sensor.id),
       direction: DismissDirection.endToStart,
       confirmDismiss: (_) => _confirmRemove(sensor),
+      onDismissed: (_) => _performRemove(sensor),
       background: Container(
         alignment: Alignment.centerRight,
         padding: const EdgeInsets.only(right: 20),
@@ -240,19 +295,26 @@ class _SensorsScreenState extends State<SensorsScreen> {
               ),
               const Divider(height: 20, color: AppColors.border),
               _infoRow('Installed', _formatDate(sensor.installedAt)),
+              _infoRow(
+                'Expires',
+                _formatDate(sensor.expiresAt),
+                highlight: status != 'active',
+              ),
               _infoRow('Lifespan', '${sensor.lifespanDays} days'),
               _infoRow(
                 'Remaining',
-                sensor.removedAt != null
-                    ? 'Removed ${_formatDate(sensor.removedAt!)}'
-                    : '${sensor.remainingDays} days',
+                '${sensor.remainingDays} days',
                 highlight: status != 'active',
               ),
               const SizedBox(height: 10),
               Align(
                 alignment: Alignment.centerRight,
                 child: OutlinedButton.icon(
-                  onPressed: () => _confirmRemove(sensor),
+                  onPressed: () async {
+                    if (await _confirmRemove(sensor)) {
+                      _performRemove(sensor);
+                    }
+                  },
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppColors.googleRed,
                     side: const BorderSide(color: AppColors.googleRed),

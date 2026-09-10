@@ -7,6 +7,7 @@ class ThresholdConfig {
   final double tempMin;
   final double tempMax;
   final double tdsMax;
+  final double waterLevelMin;
 
   const ThresholdConfig({
     this.phMin = 0,
@@ -14,6 +15,7 @@ class ThresholdConfig {
     this.tempMin = 0,
     this.tempMax = 0,
     this.tdsMax = 0,
+    this.waterLevelMin = 0,
   });
 
   factory ThresholdConfig.fromMap(Map<dynamic, dynamic> map) {
@@ -23,6 +25,7 @@ class ThresholdConfig {
       tempMin: (map['temp_min'] as num?)?.toDouble() ?? 0,
       tempMax: (map['temp_max'] as num?)?.toDouble() ?? 0,
       tdsMax: (map['tds_max'] as num?)?.toDouble() ?? 0,
+      waterLevelMin: (map['waterlevel_min'] as num?)?.toDouble() ?? 0,
     );
   }
 

@@ -42,6 +42,10 @@
 #define NTP_SERVER       "pool.ntp.org"
 #define GMT_OFFSET_SEC   28800  // UTC+8 (Malaysia time)
 
+// Alert cooldown — prevents spamming the same alert every 15s while a
+// threshold stays breached. One alert per parameter per cooldown window.
+#define ALERT_COOLDOWN_MS 300000UL  // 5 minutes
+
 // Firebase Objects
 FirebaseData fbdo;
 FirebaseAuth auth;
@@ -50,11 +54,24 @@ FirebaseConfig config;
 bool signupOK = false;
 
 // Cached thresholds (read from Firebase)
+float thresholdWaterMin = 30.0;   // % below this = low
+float thresholdWaterMax = 100.0;  // % above this = high
 float thresholdTempMin = 26.0;
 float thresholdTempMax = 32.0;
 float thresholdPhMin   = 7.0;
 float thresholdPhMax   = 8.5;
 float thresholdTdsMax  = 500.0;
+
+// Last time each parameter sent an alert: waterlevel, temperature, pH, tds
+unsigned long lastAlertSentMs[4] = {0, 0, 0, 0};
+
+int paramIndex(const String& parameter) {
+  if (parameter == "waterlevel")  return 0;
+  if (parameter == "temperature") return 1;
+  if (parameter == "pH")          return 2;
+  if (parameter == "tds")         return 3;
+  return -1;
+}
 
 // NTP time retrieval — returns milliseconds since epoch (64-bit).
 // NOTE: Must use int64_t. A 32-bit unsigned long overflows for
@@ -74,6 +91,12 @@ void fetchThresholds() {
 
   String basePath = String(TANK_ID) + "/config/thresholds";
 
+  if (Firebase.RTDB.getFloat(&fbdo, basePath + "/waterlevel_min")) {
+    thresholdWaterMin = fbdo.floatData();
+  }
+  if (Firebase.RTDB.getFloat(&fbdo, basePath + "/waterlevel_max")) {
+    thresholdWaterMax = fbdo.floatData();
+  }
   if (Firebase.RTDB.getFloat(&fbdo, basePath + "/temp_min")) {
     thresholdTempMin = fbdo.floatData();
   }
@@ -91,39 +114,72 @@ void fetchThresholds() {
   }
 
   Serial.println("Thresholds fetched from Firebase.");
+  Serial.printf("  Water: %.0f–%.0f %%\n", thresholdWaterMin, thresholdWaterMax);
   Serial.printf("  Temp: %.1f–%.1f °C\n", thresholdTempMin, thresholdTempMax);
   Serial.printf("  pH:   %.1f–%.1f\n", thresholdPhMin, thresholdPhMax);
   Serial.printf("  TDS:  ≤ %.0f ppm\n", thresholdTdsMax);
 }
 
-// Check thresholds and send alert to /TANK_01/alerts if exceeded
+// Check thresholds and send an alert to /TANK_01/alerts if exceeded.
+// Severity: 'critical' when far out of range, 'warning' when slightly out.
+// A per-parameter cooldown prevents alert spam while a value stays breached.
 void checkAndSendAlert(String parameter, float value) {
-  bool alert = false;
+  String severity = "";
   String action = "";
 
-  if (parameter == "temperature") {
-    if (value < thresholdTempMin) { alert = true; action = "Heater on"; }
-    if (value > thresholdTempMax) { alert = true; action = "Heater off"; }
+  if (parameter == "waterlevel") {
+    if (value < thresholdWaterMin) {
+      severity = (value < thresholdWaterMin / 2.0) ? "critical" : "warning";
+      action = "Water level low — check supply";
+    } else if (value > thresholdWaterMax) {
+      severity = "warning";
+      action = "Water level high — possible overflow";
+    }
+  } else if (parameter == "temperature") {
+    if (value < thresholdTempMin) {
+      severity = (value < thresholdTempMin - 3.0) ? "critical" : "warning";
+      action = "Heater on — temperature too low";
+    } else if (value > thresholdTempMax) {
+      severity = (value > thresholdTempMax + 3.0) ? "critical" : "warning";
+      action = "Heater off — temperature too high";
+    }
   } else if (parameter == "pH") {
-    if (value < thresholdPhMin)   { alert = true; action = "pH too low"; }
-    if (value > thresholdPhMax)   { alert = true; action = "pH too high"; }
+    if (value < thresholdPhMin) {
+      severity = (value < thresholdPhMin - 0.5) ? "critical" : "warning";
+      action = "pH too low";
+    } else if (value > thresholdPhMax) {
+      severity = (value > thresholdPhMax + 0.5) ? "critical" : "warning";
+      action = "pH too high";
+    }
   } else if (parameter == "tds") {
-    if (value > thresholdTdsMax)  { alert = true; action = "Change water"; }
+    if (value > thresholdTdsMax) {
+      severity = (value > thresholdTdsMax * 1.2) ? "critical" : "warning";
+      action = "Change water — TDS too high";
+    }
   }
 
-  if (alert) {
-    String alertPath = String(TANK_ID) + "/alerts";
-    FirebaseJson alertJson;
-    alertJson.set("parameter", parameter);
-    alertJson.set("value", value);
-    alertJson.set("actionTaken", action);
-    alertJson.set("timestamp", getTimeMs());
+  if (severity.length() == 0) return;  // value within range — nothing to do
 
-    if (Firebase.RTDB.pushJSON(&fbdo, alertPath, &alertJson)) {
-      Serial.printf("⚠ Alert sent: %s = %.1f (%s)\n", parameter.c_str(), value, action.c_str());
-    } else {
-      Serial.println("❌ Failed to send alert: " + fbdo.errorReason());
-    }
+  int idx = paramIndex(parameter);
+  if (idx >= 0 && millis() - lastAlertSentMs[idx] < ALERT_COOLDOWN_MS) {
+    Serial.println("Alert suppressed (cooldown active): " + parameter);
+    return;
+  }
+
+  String alertPath = String(TANK_ID) + "/alerts";
+  FirebaseJson alertJson;
+  alertJson.set("parameter", parameter);
+  alertJson.set("value", value);
+  alertJson.set("actionTaken", action);
+  alertJson.set("severity", severity);
+  alertJson.set("timestamp", getTimeMs());
+
+  if (Firebase.RTDB.pushJSON(&fbdo, alertPath, &alertJson)) {
+    if (idx >= 0) lastAlertSentMs[idx] = millis();
+    Serial.printf("⚠ %s alert: %s = %.1f (%s)\n",
+                  severity.c_str(), parameter.c_str(), value, action.c_str());
+  } else {
+    Serial.println("❌ Failed to send alert: " + fbdo.errorReason());
   }
 }
 
@@ -223,7 +279,8 @@ void loop() {
     }
 
     // --- 5. CHECK THRESHOLDS & SEND ALERTS ---
-    // (Alerts appear in Admin Dashboard > Alert History)
+    // (The Cloud Function pushes these alerts to worker phones.)
+    checkAndSendAlert("waterlevel", waterPercent);  // water level is connected
     // NOTE: Uncomment when temperature/pH/TDS sensors are connected:
     // checkAndSendAlert("temperature", temp);
     // checkAndSendAlert("pH", ph);

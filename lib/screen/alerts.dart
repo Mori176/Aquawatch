@@ -17,7 +17,16 @@ class _AlertsScreenState extends State<AlertsScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Alerts')),
+      appBar: AppBar(
+        title: const Text('Alerts'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.delete_sweep_outlined),
+            tooltip: 'Clear old alerts',
+            onPressed: _clearOldAlerts,
+          ),
+        ],
+      ),
       body: StreamBuilder<List<AlertEvent>>(
         stream: _dbService.streamAlerts(),
         builder: (context, snapshot) {
@@ -79,6 +88,57 @@ class _AlertsScreenState extends State<AlertsScreen> {
         },
       ),
     );
+  }
+
+  /// Asks how many alerts to keep, then deletes everything older.
+  Future<void> _clearOldAlerts() async {
+    final keep = await showDialog<int>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('Clear old alerts'),
+        children: [
+          const Padding(
+            padding: EdgeInsets.symmetric(horizontal: 24),
+            child: Text(
+              'Delete all alerts except the newest…',
+              style: TextStyle(fontSize: 13, color: AppColors.greyText),
+            ),
+          ),
+          const SizedBox(height: 8),
+          for (final option in const [5, 10, 20])
+            SimpleDialogOption(
+              onPressed: () => Navigator.pop(context, option),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6),
+                child: Text(
+                  'Keep latest $option',
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+              ),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+
+    if (keep == null) return;
+
+    final deleted = await _dbService.clearOldAlerts(keep: keep);
+    if (!mounted) return;
+    _showSnack(deleted == 0
+        ? 'Nothing to clear — already tidy.'
+        : 'Cleared $deleted old alert(s), kept latest $keep.');
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _filterChip(String label, int count, String key) {

@@ -55,3 +55,8 @@ android/app/.cxx/
 
 # iOS not used in this project
 ios/
+
+# Cloud Functions build junk
+functions/node_modules/
+firebase-debug.log
+functions-debug.log
