@@ -155,7 +155,10 @@ class DatabaseService {
 
   // ── Reports ──────────────────────────────────────────────────
 
-  /// Stream of the most recent reports from /<TANK_ID>/reports
+  /// Stream of the most recent reports from /<TANK_ID>/reports.
+  /// Only entries with an `issue` field count as worker reports —
+  /// anything else living under this node (e.g. the web app's
+  /// `sent` folder) is skipped.
   Stream<List<Report>> streamReports() {
     return _db
         .ref(AppConstants.reportsPath)
@@ -166,6 +169,9 @@ class DatabaseService {
       if (raw == null) return <Report>[];
       final map = raw as Map<dynamic, dynamic>;
       return map.entries
+          .where((e) =>
+              e.value is Map<dynamic, dynamic> &&
+              (e.value as Map<dynamic, dynamic>)['issue'] != null)
           .map((e) => Report.fromMap(
               e.value as Map<dynamic, dynamic>, e.key.toString()))
           .toList()

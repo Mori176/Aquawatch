@@ -162,6 +162,13 @@ class _SensorsScreenState extends State<SensorsScreen> {
     _hiddenIds.remove(id);
     _lastKnownStatus[id] = 'active';
     await _dbService.installSensor(id: id, type: type, lifespanDays: lifespan);
+    // Auto-log the installation to the reports history (admin Receive view)
+    await _dbService.saveReport(
+      issue: 'Sensor $id installed',
+      sensorId: id,
+      notes: 'Auto-logged from Sensors dashboard '
+          '($type, $lifespan-day lifespan).',
+    );
     if (mounted) {
       _showSnack('Sensor $id installed ($lifespan-day countdown started).');
     }
@@ -202,6 +209,12 @@ class _SensorsScreenState extends State<SensorsScreen> {
     await _dbService.removeSensor(sensor.id);
     await _dbService.logSensorAlert(sensorId: sensor.id, status: 'inactive');
     await _dbService.echoSensorStatus(sensor.id, 'inactive');
+    // Auto-log the removal to the reports history (admin Receive view)
+    await _dbService.saveReport(
+      issue: 'Sensor ${sensor.id} removed',
+      sensorId: sensor.id,
+      notes: 'Auto-logged from Sensors dashboard.',
+    );
     if (mounted) _showSnack('Sensor ${sensor.id} removed.');
   }
 
