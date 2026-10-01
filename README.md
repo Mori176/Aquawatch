@@ -30,7 +30,7 @@ AquaWatch is an end-to-end IoT system that monitors water quality for Asian Seab
                                          ▼
                              ┌─────────────────────────┐
                              │    WORKER MOBILE APP    │
-                             │  (Flutter · this repo)  │
+                             │  (Flutter · MobileApp)  │
                              └─────────────────────────┘
 ```
 
@@ -44,7 +44,7 @@ Every component communicates **only through Firebase** — no direct device-to-d
 |---|---|---|---|
 | **Worker Mobile App** | Flutter · Firebase | `MobileApp` | ✅ Active |
 | **ESP32 Firmware** | C++ (Arduino) | `MobileApp` (`esp32_water_monitor/`) | ✅ Active |
-| **Admin Web App** | Web · Firebase | separate repo | 🚧 In progress |
+| **Admin Web App** | Web · Firebase | `WebApp` | ✅ Active |
 
 ---
 
@@ -130,13 +130,15 @@ my_fish_app/
 └── pubspec.yaml               # dependencies
 ```
 
-**Branches:** `MobileApp` holds the application source code. `main` is the project landing page.
+**Branches:** `MobileApp` holds the Flutter worker app + ESP32 firmware. `WebApp` holds the admin web dashboard. `main` is this project landing page.
+
+> The source code does not live on `main`. Check out the branch you need, e.g. `git clone -b MobileApp <repo-url>` or `git clone -b WebApp <repo-url>`.
 
 ---
 
 ## 🛣️ Roadmap
 
-- [ ] Admin web app — Report Dashboard (Receive / Send)
+- [x] Admin web app — Report Dashboard (Receive / Send) (`WebApp` branch)
 - [ ] Cloud Function — automatic FCM push on critical alerts & sensor expiry
 - [ ] Temperature, pH, and TDS sensor hardware integration
 - [ ] Background push notification handling
