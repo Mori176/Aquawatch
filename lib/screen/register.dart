@@ -54,6 +54,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
     setState(() => _isLoading = true);
     try {
       final credential = await _authService.register(email, password);
+      // New sign-ups stay remembered for 24 hours like a login.
+      await _authService.rememberSession(remember: true);
       final uid = credential.user?.uid;
       if (uid != null) {
         await _dbService.saveUserProfile(

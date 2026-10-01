@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'firebase_options.dart';
-import 'screen/login.dart';
+import 'screen/startup_gate.dart';
 import 'services/notification_service.dart';
 import 'utils/navigator.dart';
 import 'utils/theme.dart';
@@ -23,7 +23,7 @@ class MyFishApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: rootScaffoldMessengerKey,
       theme: AppTheme.lightTheme,
-      home: const LoginScreen(),
+      home: const StartupGate(),
     );
   }
 }

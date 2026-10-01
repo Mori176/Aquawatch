@@ -43,6 +43,8 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       final credential = await _authService.signIn(email, password);
+      // Record the "remember this terminal for 24 hours" choice.
+      await _authService.rememberSession(remember: _rememberTerminal);
       // Save the FCM token so this worker device receives push alerts.
       final uid = credential.user?.uid;
       if (uid != null) {
