@@ -5,7 +5,6 @@ class AppConstants {
 
   static String get tankStatusPath => 'tank_status';
   static String get configPath => '$tankId/config/thresholds';
-  static String get sensorLifespanPath => '$tankId/config/sensor_lifespan';
   static String get alertsPath => '$tankId/alerts';
   static String get reportsPath => '$tankId/reports';
   static String get sensorsPath => '$tankId/sensors';

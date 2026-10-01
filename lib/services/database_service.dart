@@ -2,7 +2,6 @@ import 'dart:io';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import '../models/sensor_data.dart';
-import '../models/sensor_lifespan.dart';
 import '../models/sensor_info.dart';
 import '../models/alert_event.dart';
 import '../models/notification_settings.dart';
@@ -28,16 +27,6 @@ class DatabaseService {
         );
       }
       return SensorData.fromMap(raw as Map<dynamic, dynamic>);
-    });
-  }
-
-  /// Stream of sensor lifespan (months) from /<TANK_ID>/config/sensor_lifespan
-  /// Set by the admin from the web app, read here by the mobile app.
-  Stream<SensorLifespan> streamSensorLifespan() {
-    return _db.ref(AppConstants.sensorLifespanPath).onValue.map((event) {
-      final raw = event.snapshot.value;
-      if (raw == null) return const SensorLifespan();
-      return SensorLifespan.fromMap(raw as Map<dynamic, dynamic>);
     });
   }
 
