@@ -1,0 +1,50 @@
+{
+  "rules": {
+    "tank_status": {
+      ".read": "auth != null",
+      ".write": "auth != null"
+    },
+
+    "admins": {
+      "$uid": {
+        ".read": "auth != null && $uid === auth.uid",
+        ".write": false
+      }
+    },
+
+    "users": {
+      "$uid": {
+        ".read": "auth != null && $uid === auth.uid",
+        ".write": "auth != null && $uid === auth.uid"
+      }
+    },
+
+    "TANK_01": {
+      "config": {
+        ".read": "auth != null",
+        "thresholds": {
+          ".write": "auth != null && root.child('admins').child(auth.uid).val() === true"
+        },
+        "sensor_lifespan": {
+          ".write": "auth != null && root.child('admins').child(auth.uid).val() === true"
+        }
+      },
+      "history": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      },
+      "alerts": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      },
+      "sensors": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      },
+      "reports": {
+        ".read": "auth != null",
+        ".write": "auth != null"
+      }
+    }
+  }
+}
