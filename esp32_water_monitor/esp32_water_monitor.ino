@@ -24,8 +24,11 @@
 // ═══════════════════════════════════════════════════════════════════
 
 // 1. Your Wi-Fi Credentials
-#define WIFI_SSID        "Oppo"
-#define WIFI_PASSWORD    "v27sxdkd"
+#define WIFI_SSID        "ezree17@unifi"     // home Wi-Fi
+#define WIFI_PASSWORD    "ezree8877"
+// Backup (phone hotspot) — swap in for demos away from home:
+// #define WIFI_SSID        "Oppo"
+// #define WIFI_PASSWORD    "v27sxdkd"
 
 // 2. Your Firebase Credentials
 #define API_KEY          "AIzaSyAiHatyHKL8pKdpH5quGWD3ExcomaYFEXE"
@@ -192,7 +195,10 @@ void checkAndSendAlert(String parameter, float value) {
   if (severity.length() == 0) return;  // value within range — nothing to do
 
   int idx = paramIndex(parameter);
-  if (idx >= 0 && millis() - lastAlertSentMs[idx] < ALERT_COOLDOWN_MS) {
+  // NOTE: the "!= 0" guard allows the FIRST alert after boot to fire
+  // immediately (otherwise the 5-min cooldown would swallow it).
+  if (idx >= 0 && lastAlertSentMs[idx] != 0 &&
+      millis() - lastAlertSentMs[idx] < ALERT_COOLDOWN_MS) {
     Serial.println("Alert suppressed (cooldown active): " + parameter);
     return;
   }
@@ -221,10 +227,17 @@ void setup() {
   pinMode(POWER_PIN, OUTPUT);
   digitalWrite(POWER_PIN, LOW);
 
-  // Connect to Wi-Fi
+  // Connect to Wi-Fi (20s timeout — restart and retry if it fails,
+  // instead of hanging forever on a wrong password / dead router)
   Serial.print("Connecting to Wi-Fi");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  unsigned long wifiStart = millis();
   while (WiFi.status() != WL_CONNECTED) {
+    if (millis() - wifiStart > 20000UL) {
+      Serial.println("\nWi-Fi failed — check SSID/password. Restarting...");
+      delay(1000);
+      ESP.restart();
+    }
     Serial.print(".");
     delay(300);
   }
