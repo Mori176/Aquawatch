@@ -88,6 +88,34 @@ int64_t getTimeMs() {
   return (int64_t)now * 1000LL;
 }
 
+// Water-level read with a median-of-5 filter — rejects electrical noise
+// spikes for a steadier percentage. The sensor is powered only while
+// sampling, which slows corrosion of the resistive strip.
+int readWaterPercent() {
+  int samples[5];
+
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);  // let the sensor stabilise
+  for (int i = 0; i < 5; i++) {
+    samples[i] = analogRead(SIGNAL_PIN);
+    delay(10);
+  }
+  digitalWrite(POWER_PIN, LOW);
+
+  // Insertion sort (tiny array), then take the middle value.
+  for (int i = 1; i < 5; i++) {
+    int key = samples[i];
+    int j = i - 1;
+    while (j >= 0 && samples[j] > key) {
+      samples[j + 1] = samples[j];
+      j--;
+    }
+    samples[j + 1] = key;
+  }
+
+  return map(samples[2], 0, 4095, 0, 100);
+}
+
 // Read thresholds from Firebase /TANK_01/config/thresholds
 void fetchThresholds() {
   if (!Firebase.ready() || !signupOK) return;
@@ -226,13 +254,8 @@ void setup() {
 void loop() {
   if (Firebase.ready() && signupOK) {
 
-    // --- 1. READ THE SENSOR ---
-    digitalWrite(POWER_PIN, HIGH);
-    delay(100);
-    int rawValue = analogRead(SIGNAL_PIN);
-    digitalWrite(POWER_PIN, LOW);
-
-    int waterPercent = map(rawValue, 0, 4095, 0, 100);
+    // --- 1. READ THE SENSOR (median-of-5 filtered) ---
+    int waterPercent = readWaterPercent();
 
     Serial.printf("Water Level: %d%%\n", waterPercent);
 
