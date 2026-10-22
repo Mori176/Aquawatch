@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 /// Google-inspired palette — red, blue, green and yellow accents
-/// on clean light surfaces.
+/// Muhammad Hareez - CSS (Copy-Paste ke dalam .dart nanti)
 class AppColors {
   // Google palette
   static const Color googleRed = Color(0xFFEA4335);

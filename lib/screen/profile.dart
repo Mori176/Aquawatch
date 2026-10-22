@@ -25,7 +25,7 @@ class ProfileScreen extends StatelessWidget {
             children: [
               const SectionLabel('Current Station'),
               const Text(
-                'Seabass Alpha - North Tank',
+                'SeaBass Alpha - UniKL',
                 style: TextStyle(
                   fontSize: 18,
                   fontWeight: FontWeight.bold,

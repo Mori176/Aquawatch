@@ -41,6 +41,50 @@ class DatabaseService {
     });
   }
 
+  // ── Reading frequency (ESP32 sampling interval) ──────────────
+
+  /// Live stream of the ESP32 reading interval (seconds) from
+  /// /<TANK_ID>/config/interval_seconds. Clamped to a 10s floor.
+  Stream<int> streamReadingInterval() {
+    return _db.ref(AppConstants.intervalConfigPath).onValue.map((event) {
+      final raw = event.snapshot.value;
+      var secs = 15;
+      if (raw is int) {
+        secs = raw;
+      } else if (raw is num) {
+        secs = raw.toInt();
+      } else if (raw is String) {
+        secs = int.tryParse(raw) ?? 15;
+      }
+      return secs < 10 ? 10 : secs;
+    });
+  }
+
+  /// Writes a new reading interval (seconds); the ESP32 applies it
+  /// within ~60 seconds via its config refresh.
+  Future<void> setReadingInterval(int seconds) async {
+    await _db.ref(AppConstants.intervalConfigPath).set(seconds);
+  }
+
+  /// Stream of the most recent historical readings from
+  /// /<TANK_ID>/history — feeds the worker Trends screen.
+  Stream<List<SensorData>> streamHistoricalData({int count = 120}) {
+    return _db
+        .ref(AppConstants.historyPath)
+        .limitToLast(count)
+        .onValue
+        .map((event) {
+      final raw = event.snapshot.value;
+      if (raw == null) return <SensorData>[];
+      final map = raw as Map<dynamic, dynamic>;
+      final list = map.values
+          .map((v) => SensorData.fromMap(v as Map<dynamic, dynamic>))
+          .toList();
+      list.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      return list;
+    });
+  }
+
   /// Stream of the last 20 alerts from /<TANK_ID>/alerts
   Stream<List<AlertEvent>> streamAlerts() {
     return _db

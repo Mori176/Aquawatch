@@ -39,7 +39,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
     final password = _passwordController.text;
 
     if (name.isEmpty || operatorId.isEmpty || email.isEmpty || password.isEmpty) {
-      _showSnack('Please fill in all fields.');
+      _showSnack('Please Fill In All Fields.');
       return;
     }
     if (password.length < 6) {
@@ -47,7 +47,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
       return;
     }
     if (!_agreeProtocols) {
-      _showSnack('You must agree to the System Protocols.');
+      _showSnack('You Must Agree To The System Protocols.');
       return;
     }
 

@@ -65,7 +65,7 @@ class _ReportScreenState extends State<ReportScreen> {
     final notes = _notesController.text.trim();
 
     if (issue.isEmpty) {
-      _showSnack('Please describe the main issue.');
+      _showSnack('Please describe issue(s).');
       return;
     }
 

@@ -44,7 +44,8 @@
 
 // 4. Constants
 #define TANK_ID          "TANK_01"
-#define UPLOAD_INTERVAL  15000  // 15 seconds between readings
+#define DEFAULT_UPLOAD_INTERVAL_MS 15000UL  // default; overridden by Firebase
+#define MIN_UPLOAD_INTERVAL_MS     10000UL  // 10 s safety floor (anti-spam)
 #define NTP_SERVER       "pool.ntp.org"
 #define GMT_OFFSET_SEC   28800  // UTC+8 (Malaysia time)
 
@@ -70,6 +71,10 @@ float thresholdTdsMax  = 500.0;
 
 // Last time each parameter sent an alert: waterlevel, temperature, pH, tds
 unsigned long lastAlertSentMs[4] = {0, 0, 0, 0};
+
+// Dynamic upload interval — fetched from Firebase
+// (TANK_01/config/interval_seconds), changeable from the mobile app.
+unsigned long uploadIntervalMs = DEFAULT_UPLOAD_INTERVAL_MS;
 
 int paramIndex(const String& parameter) {
   if (parameter == "waterlevel")  return 0;
@@ -152,6 +157,21 @@ void fetchThresholds() {
   Serial.printf("  Temp: %.1f–%.1f °C\n", thresholdTempMin, thresholdTempMax);
   Serial.printf("  pH:   %.1f–%.1f\n", thresholdPhMin, thresholdPhMax);
   Serial.printf("  TDS:  ≤ %.0f ppm\n", thresholdTdsMax);
+}
+
+// Reading frequency — fetched from TANK_01/config/interval_seconds.
+// Set from the mobile app's Reading Frequency picker; a 10-second floor
+// prevents accidental spam writes. The new interval applies within
+// ~60 seconds (the config refresh cycle).
+void fetchUploadInterval() {
+  if (!Firebase.ready() || !signupOK) return;
+
+  if (Firebase.RTDB.getInt(&fbdo, String(TANK_ID) + "/config/interval_seconds")) {
+    int secs = fbdo.intData();
+    if (secs < 10) secs = 10;
+    uploadIntervalMs = (unsigned long)secs * 1000UL;
+    Serial.printf("Upload interval set to %d s\n", secs);
+  }
 }
 
 // Check thresholds and send an alert to /TANK_01/alerts if exceeded.
@@ -260,12 +280,31 @@ void setup() {
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 
-  // Pull configured thresholds from Firebase
+  // Pull configured thresholds + reading interval from Firebase
   fetchThresholds();
+  fetchUploadInterval();
 }
 
 void loop() {
-  if (Firebase.ready() && signupOK) {
+  unsigned long now = millis();
+
+  // --- 6. PERIODIC CONFIG REFRESH (every 60 s) ---
+  // Picks up admin threshold changes AND reading-frequency changes
+  // from the mobile app. Non-blocking — runs alongside the scheduler.
+  static unsigned long lastConfigFetch = 0;
+  if (now - lastConfigFetch > 60000UL) {
+    fetchThresholds();
+    fetchUploadInterval();
+    lastConfigFetch = now;
+  }
+
+  // --- 7. READ + UPLOAD on the dynamic schedule ---
+  // uploadIntervalMs comes from Firebase (default 15 s). Using a
+  // millis()-based scheduler (not delay) keeps the device responsive
+  // to config changes even at long intervals like 12/24 hours.
+  static unsigned long lastUpload = 0;
+  if (Firebase.ready() && signupOK && now - lastUpload >= uploadIntervalMs) {
+    lastUpload = now;
 
     // --- 1. READ THE SENSOR (median-of-5 filtered) ---
     int waterPercent = readWaterPercent();
@@ -328,15 +367,5 @@ void loop() {
     checkAndSendAlert("temperature", temp);         // SIMULATED
     checkAndSendAlert("pH", ph);                    // SIMULATED
     checkAndSendAlert("tds", tds);                  // SIMULATED
-
   }
-
-  // --- 6. PERIODIC THRESHOLD REFRESH ---
-  static unsigned long lastThresholdFetch = 0;
-  if (millis() - lastThresholdFetch > 60000) {  // every 60 seconds
-    fetchThresholds();
-    lastThresholdFetch = millis();
-  }
-
-  delay(UPLOAD_INTERVAL);
 }

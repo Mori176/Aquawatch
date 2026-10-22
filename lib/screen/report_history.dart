@@ -22,7 +22,7 @@ class ReportHistoryScreen extends StatelessWidget {
           if (reports.isEmpty) {
             return const Center(
               child: Text(
-                'No reports sent yet.',
+                'No Reports Sent Yet!',
                 style: TextStyle(color: AppColors.greyText, fontSize: 14),
               ),
             );
