@@ -6,67 +6,77 @@
 #include <time.h>
 
 // ═══════════════════════════════════════════════════════════════════
-//  AquaMonitor — ESP32 Water Quality Monitoring
+//  AquaWatch — FINAL ESP32 Firmware
+//  IoT-Based Water Quality Monitoring & Predictive Alert System
 //  UniKL MIIT FYP
 //
-//  SENSOR STATUS:
-//    ✅ Water Level — connected (GPIO 17 power, GPIO 34 signal)
-//    ✅ Temperature — DS18B20 connected (GPIO 32, OneWire + 4.7kΩ)
-//    🔁 pH          — SIMULATED (sine wave) until calibration done
-//    🔁 TDS         — SIMULATED (sine wave) until calibration done
+//  SENSORS (all real):
+//    ✅ Water Level — resistive strip, GPIO 17 (power) / 34 (signal)
+//    ✅ Temperature — DS18B20, GPIO 32 (OneWire + 4.7kΩ pull-up)
+//    ✅ pH — analog module, GPIO 35 (calibrate PH_OFFSET!)
+//    ✅ TDS — analog module, GPIO 33 (temp-compensated formula)
 //
-//  TO INSTALL A REAL SENSOR (replaces its simulation):
-//    1. Define its pin under section 3.
-//    2. In loop(), replace its sine-wave line with the real read.
-//    (Search for "SIMULATED" in this file — all spots are tagged.)
+//  Every reading goes to:
+//    tank_status            (live view: mobile + web dashboards)
+//    TANK_01/history        (trend charts + predictive analytics)
+//    TANK_01/alerts         (threshold breaches -> Cloud Function -> push)
 //
-//  NOTE: The upload cadence is dynamic (Firebase config), default 15 s.
+//  Reading frequency is dynamic: TANK_01/config/interval_seconds,
+//  changeable from the mobile app; applied within ~60 s.
 // ═══════════════════════════════════════════════════════════════════
 
-// 1. Your Wi-Fi Credentials
-#define WIFI_SSID        "ezree17@unifi"     // home Wi-Fi
+// 1. Wi-Fi Credentials (keep SSID plain ASCII — no apostrophes/emoji!)
+#define WIFI_SSID        "ezree17@unifi"
 #define WIFI_PASSWORD    "ezree8877"
-// Backup (phone hotspot) — swap in for demos away from home:
-// #define WIFI_SSID        "Oppo"
-// #define WIFI_PASSWORD    "v27sxdkd"
+// Backup hotspot — rename the phone to something plain before using:
+// #define WIFI_SSID        "MoriPhone"
+// #define WIFI_PASSWORD    "yourhotspotpassword"
 
-// 2. Your Firebase Credentials
+// 2. Firebase Credentials
 #define API_KEY          "AIzaSyAiHatyHKL8pKdpH5quGWD3ExcomaYFEXE"
 #define DATABASE_URL     "https://myfishapp-4e3e6-default-rtdb.asia-southeast1.firebasedatabase.app/"
 
 // 3. Sensor Pins
-// NOTE: When adding new sensors, define their pins here, e.g.:
-//   #define PH_PIN      35
-//   #define TDS_PIN     33
-#define POWER_PIN  17   // Water level sensor power pin
-#define SIGNAL_PIN 34   // Water level sensor signal pin (analog)
-#define TEMP_PIN   32   // DS18B20 data pin (OneWire, 4.7k pull-up to 3V3)
+#define POWER_PIN  17   // Water level sensor power (pulsed, anti-corrosion)
+#define SIGNAL_PIN 34   // Water level signal (analog, input-only pin)
+#define TEMP_PIN   32   // DS18B20 data (OneWire)
+#define PH_PIN     35   // pH module signal (analog, input-only pin)
+#define TDS_PIN    33   // TDS module signal (analog)
 
 // 4. Constants
-#define TANK_ID          "TANK_01"
-#define DEFAULT_UPLOAD_INTERVAL_MS 15000UL  // default; overridden by Firebase
-#define MIN_UPLOAD_INTERVAL_MS     10000UL  // 10 s safety floor (anti-spam)
-#define NTP_SERVER       "pool.ntp.org"
-#define GMT_OFFSET_SEC   28800  // UTC+8 (Malaysia time)
+#define TANK_ID                  "TANK_01"
+#define DEFAULT_UPLOAD_INTERVAL_MS 15000UL  // default; Firebase overrides
+#define MIN_UPLOAD_INTERVAL_MS     10000UL  // 10 s safety floor
+#define NTP_SERVER               "pool.ntp.org"
+#define GMT_OFFSET_SEC           28800      // UTC+8 (Malaysia)
+#define ALERT_COOLDOWN_MS        300000UL   // 5 min per parameter
 
-// Alert cooldown — prevents spamming the same alert every 15s while a
-// threshold stays breached. One alert per parameter per cooldown window.
-#define ALERT_COOLDOWN_MS 300000UL  // 5 minutes
+// ── CALIBRATION CONSTANTS (adjust during setup) ────────────────────
+// pH: dip the probe in pH 7.00 buffer, read the printed pH, then set
+//     PH_OFFSET = (7.00 - printed value). Repeat until it reads 7.00.
+#define PH_OFFSET   0.00
+// Water level: note the printed RAW value with the strip dry (= empty)
+// and fully submerged (= full), then enter them here for a true 0–100%.
+#define WL_RAW_EMPTY  0
+#define WL_RAW_FULL   4095
 
 // Firebase Objects
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
 
-// Temperature sensor (DS18B20 on OneWire)
+// Temperature sensor
 OneWire oneWire(TEMP_PIN);
 DallasTemperature ds18b20(&oneWire);
 
 bool signupOK = false;
 
-// Cached thresholds (read from Firebase)
-float thresholdWaterMin = 30.0;   // % below this = low
-float thresholdWaterMax = 100.0;  // % above this = high
+// Dynamic upload interval (seconds), fetched from Firebase.
+unsigned long uploadIntervalMs = DEFAULT_UPLOAD_INTERVAL_MS;
+
+// Cached thresholds (read from Firebase / TANK_01/config/thresholds)
+float thresholdWaterMin = 30.0;
+float thresholdWaterMax = 100.0;
 float thresholdTempMin = 26.0;
 float thresholdTempMax = 32.0;
 float thresholdPhMin   = 7.0;
@@ -76,10 +86,6 @@ float thresholdTdsMax  = 500.0;
 // Last time each parameter sent an alert: waterlevel, temperature, pH, tds
 unsigned long lastAlertSentMs[4] = {0, 0, 0, 0};
 
-// Dynamic upload interval — fetched from Firebase
-// (TANK_01/config/interval_seconds), changeable from the mobile app.
-unsigned long uploadIntervalMs = DEFAULT_UPLOAD_INTERVAL_MS;
-
 int paramIndex(const String& parameter) {
   if (parameter == "waterlevel")  return 0;
   if (parameter == "temperature") return 1;
@@ -88,62 +94,90 @@ int paramIndex(const String& parameter) {
   return -1;
 }
 
-// NTP time retrieval — returns milliseconds since epoch (64-bit).
-// NOTE: Must use int64_t. A 32-bit unsigned long overflows for
-//       epoch milliseconds (value is ~1.7e12 in 2026).
+// ── Helpers ─────────────────────────────────────────────────────────
+
+// 64-bit epoch milliseconds (a 32-bit value would overflow).
 int64_t getTimeMs() {
   time_t now = time(nullptr);
-  if (now < 100000) {
-    // NTP not synced yet — fall back to uptime (cannot overflow 64-bit)
-    return (int64_t)millis();
-  }
+  if (now < 100000) return (int64_t)millis();  // NTP not synced yet
   return (int64_t)now * 1000LL;
 }
 
-// Water-level read with a median-of-5 filter — rejects electrical noise
-// spikes for a steadier percentage. The sensor is powered only while
-// sampling, which slows corrosion of the resistive strip.
-int readWaterPercent() {
-  int samples[5];
-
-  digitalWrite(POWER_PIN, HIGH);
-  delay(100);  // let the sensor stabilise
+// Median-of-5 analog sample — rejects electrical noise spikes.
+int medianAnalogRead(int pin) {
+  int s[5];
   for (int i = 0; i < 5; i++) {
-    samples[i] = analogRead(SIGNAL_PIN);
+    s[i] = analogRead(pin);
     delay(10);
   }
-  digitalWrite(POWER_PIN, LOW);
-
-  // Insertion sort (tiny array), then take the middle value.
   for (int i = 1; i < 5; i++) {
-    int key = samples[i];
-    int j = i - 1;
-    while (j >= 0 && samples[j] > key) {
-      samples[j + 1] = samples[j];
-      j--;
-    }
-    samples[j + 1] = key;
+    int key = s[i], j = i - 1;
+    while (j >= 0 && s[j] > key) { s[j + 1] = s[j]; j--; }
+    s[j + 1] = key;
   }
-
-  return map(samples[2], 0, 4095, 0, 100);
+  return s[2];
 }
 
-// Reads the DS18B20. On disconnect/error it returns the last good value,
-// or NAN if no valid reading yet — callers must check isnan() before use.
-// This prevents writing -127 to Firebase (and false critical alerts).
-float lastGoodTempC = NAN;
+// ── Sensor readers (each keeps a last-good value; NAN = never valid) ─
 
+float lastGoodTempC = NAN;
+float lastGoodPh    = NAN;
+float lastGoodTds   = NAN;
+
+// DS18B20. On error returns the last good value (or NAN).
 float readTemperatureC() {
   ds18b20.requestTemperatures();
   float t = ds18b20.getTempCByIndex(0);
   if (t == DEVICE_DISCONNECTED_C || t < -50.0 || t > 100.0) {
-    return lastGoodTempC;  // may still be NAN
+    return lastGoodTempC;
   }
   lastGoodTempC = t;
   return t;
 }
 
-// Read thresholds from Firebase /TANK_01/config/thresholds
+// Water level as a 0–100 % reading, median-filtered, pulsed power.
+int readWaterPercent(int* rawOut = nullptr) {
+  digitalWrite(POWER_PIN, HIGH);
+  delay(100);
+  int raw = medianAnalogRead(SIGNAL_PIN);
+  digitalWrite(POWER_PIN, LOW);
+  if (rawOut) *rawOut = raw;
+  return map(raw, WL_RAW_EMPTY, WL_RAW_FULL, 0, 100);
+}
+
+// pH from the analog module. Returns NAN when the signal is pegged
+// (probe/module disconnected). Formula: pH = 3.5 × V + PH_OFFSET —
+// calibrate PH_OFFSET with the pH 7.00 buffer (see constants block).
+float readPh(float* voltageOut = nullptr) {
+  int raw = medianAnalogRead(PH_PIN);
+  float voltage = raw * 3.3 / 4095.0;
+  if (voltageOut) *voltageOut = voltage;
+  if (raw < 50 || raw > 4040) return lastGoodPh;  // pegged = not connected
+  float ph = 3.5 * voltage + PH_OFFSET;
+  if (ph < 0.0 || ph > 14.0) return lastGoodPh;   // physically impossible
+  lastGoodPh = ph;
+  return ph;
+}
+
+// TDS via the standard DFRobot-style conversion, temperature-compensated
+// with the live DS18B20 reading (falls back to 25 °C if temp is invalid).
+float readTds(float temperatureC, float* voltageOut = nullptr) {
+  int raw = medianAnalogRead(TDS_PIN);
+  float voltage = raw * 3.3 / 4095.0;
+  if (voltageOut) *voltageOut = voltage;
+  if (raw < 50 || raw > 4040) return lastGoodTds;  // pegged = not connected
+
+  float temp = isnan(temperatureC) ? 25.0 : temperatureC;
+  float compensation = 1.0 + 0.02 * (temp - 25.0);
+  float v = voltage / compensation;
+  float tds = (133.42 * v * v * v - 255.86 * v * v + 857.39 * v) * 0.5;
+  if (tds < 0) tds = 0;
+  lastGoodTds = tds;
+  return tds;
+}
+
+// ── Firebase config fetches ─────────────────────────────────────────
+
 void fetchThresholds() {
   if (!Firebase.ready() || !signupOK) return;
 
@@ -173,18 +207,13 @@ void fetchThresholds() {
 
   Serial.println("Thresholds fetched from Firebase.");
   Serial.printf("  Water: %.0f–%.0f %%\n", thresholdWaterMin, thresholdWaterMax);
-  Serial.printf("  Temp: %.1f–%.1f °C\n", thresholdTempMin, thresholdTempMax);
-  Serial.printf("  pH:   %.1f–%.1f\n", thresholdPhMin, thresholdPhMax);
-  Serial.printf("  TDS:  ≤ %.0f ppm\n", thresholdTdsMax);
+  Serial.printf("  Temp:  %.1f–%.1f °C\n", thresholdTempMin, thresholdTempMax);
+  Serial.printf("  pH:    %.1f–%.1f\n", thresholdPhMin, thresholdPhMax);
+  Serial.printf("  TDS:   ≤ %.0f ppm\n", thresholdTdsMax);
 }
 
-// Reading frequency — fetched from TANK_01/config/interval_seconds.
-// Set from the mobile app's Reading Frequency picker; a 10-second floor
-// prevents accidental spam writes. The new interval applies within
-// ~60 seconds (the config refresh cycle).
 void fetchUploadInterval() {
   if (!Firebase.ready() || !signupOK) return;
-
   if (Firebase.RTDB.getInt(&fbdo, String(TANK_ID) + "/config/interval_seconds")) {
     int secs = fbdo.intData();
     if (secs < 10) secs = 10;
@@ -193,9 +222,10 @@ void fetchUploadInterval() {
   }
 }
 
-// Check thresholds and send an alert to /TANK_01/alerts if exceeded.
-// Severity: 'critical' when far out of range, 'warning' when slightly out.
-// A per-parameter cooldown prevents alert spam while a value stays breached.
+// ── Alerts ──────────────────────────────────────────────────────────
+
+// Severity: 'critical' when far out of range, 'warning' when slightly
+// out. One alert per parameter per 5-minute cooldown window.
 void checkAndSendAlert(String parameter, float value) {
   String severity = "";
   String action = "";
@@ -231,15 +261,12 @@ void checkAndSendAlert(String parameter, float value) {
     }
   }
 
-  if (severity.length() == 0) return;  // value within range — nothing to do
+  if (severity.length() == 0) return;  // within range
 
   int idx = paramIndex(parameter);
-  // NOTE: the "!= 0" guard allows the FIRST alert after boot to fire
-  // immediately (otherwise the 5-min cooldown would swallow it).
   if (idx >= 0 && lastAlertSentMs[idx] != 0 &&
       millis() - lastAlertSentMs[idx] < ALERT_COOLDOWN_MS) {
-    Serial.println("Alert suppressed (cooldown active): " + parameter);
-    return;
+    return;  // cooldown active
   }
 
   String alertPath = String(TANK_ID) + "/alerts";
@@ -259,6 +286,8 @@ void checkAndSendAlert(String parameter, float value) {
   }
 }
 
+// ── Setup & Loop ────────────────────────────────────────────────────
+
 void setup() {
   Serial.begin(115200);
 
@@ -266,12 +295,10 @@ void setup() {
   pinMode(POWER_PIN, OUTPUT);
   digitalWrite(POWER_PIN, LOW);
 
-  // Start the DS18B20 at maximum resolution (0.0625 °C steps)
   ds18b20.begin();
-  ds18b20.setResolution(12);
+  ds18b20.setResolution(12);  // 0.0625 °C steps
 
-  // Connect to Wi-Fi (20s timeout — restart and retry if it fails,
-  // instead of hanging forever on a wrong password / dead router)
+  // Wi-Fi with timeout — restart and retry instead of hanging forever.
   Serial.print("Connecting to Wi-Fi");
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   unsigned long wifiStart = millis();
@@ -286,10 +313,8 @@ void setup() {
   }
   Serial.println("\nWi-Fi Connected!");
 
-  // Sync time via NTP
   configTime(GMT_OFFSET_SEC, 0, NTP_SERVER);
 
-  // Configure Firebase
   config.api_key = API_KEY;
   config.database_url = DATABASE_URL;
 
@@ -297,13 +322,13 @@ void setup() {
     Serial.println("Firebase Auth Successful");
     signupOK = true;
   } else {
-    Serial.printf("Firebase Auth Failed: %s\n", config.signer.signupError.message.c_str());
+    Serial.printf("Firebase Auth Failed: %s\n",
+                  config.signer.signupError.message.c_str());
   }
 
   Firebase.begin(&config, &auth);
   Firebase.reconnectWiFi(true);
 
-  // Pull configured thresholds + reading interval from Firebase
   fetchThresholds();
   fetchUploadInterval();
 }
@@ -311,9 +336,7 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // --- 6. PERIODIC CONFIG REFRESH (every 60 s) ---
-  // Picks up admin threshold changes AND reading-frequency changes
-  // from the mobile app. Non-blocking — runs alongside the scheduler.
+  // --- 1. PERIODIC CONFIG REFRESH (every 60 s) --------------------
   static unsigned long lastConfigFetch = 0;
   if (now - lastConfigFetch > 60000UL) {
     fetchThresholds();
@@ -321,44 +344,39 @@ void loop() {
     lastConfigFetch = now;
   }
 
-  // --- 7. READ + UPLOAD on the dynamic schedule ---
-  // uploadIntervalMs comes from Firebase (default 15 s). Using a
-  // millis()-based scheduler (not delay) keeps the device responsive
-  // to config changes even at long intervals like 12/24 hours.
+  // --- 2. READ SENSORS + UPLOAD on the dynamic schedule -----------
   static unsigned long lastUpload = 0;
   if (Firebase.ready() && signupOK && now - lastUpload >= uploadIntervalMs) {
     lastUpload = now;
 
-    // --- 1. READ THE SENSOR (median-of-5 filtered) ---
-    int waterPercent = readWaterPercent();
+    // Read all four sensors (each guards against disconnection).
+    int wlRaw = 0;
+    int waterPercent = readWaterPercent(&wlRaw);
+    float temp = readTemperatureC();
+    const bool tempValid = !isnan(temp);
+    float phVoltage = 0, tdsVoltage = 0;
+    float ph = readPh(&phVoltage);
+    const bool phValid = !isnan(ph);
+    float tds = readTds(temp, &tdsVoltage);
+    const bool tdsValid = !isnan(tds);
 
-    Serial.printf("Water Level: %d%%\n", waterPercent);
+    // Serial report (voltages/raws printed for calibration sessions).
+    Serial.printf("Water Level: %d%% (raw %d)\n", waterPercent, wlRaw);
+    if (tempValid) Serial.printf("Temperature: %.1f °C\n", temp);
+    else           Serial.println("⚠ DS18B20 not responding");
+    if (phValid)   Serial.printf("pH: %.2f (V=%.2f)\n", ph, phVoltage);
+    else           Serial.println("⚠ pH module not responding");
+    if (tdsValid)  Serial.printf("TDS: %.0f ppm (V=%.2f)\n", tds, tdsVoltage);
+    else           Serial.println("⚠ TDS module not responding");
 
-    // --- 2. GET TIMESTAMP ---
     int64_t nowMs = getTimeMs();
 
-    // ── SENSOR READINGS ──────────────────────────────────────────
-    // Temperature: REAL DS18B20. pH/TDS: SIMULATED (sine waves) until
-    // their hardware is calibrated — delete those lines and read the
-    // actual pins instead when ready (see section 3 pin suggestions).
-    float temp = readTemperatureC();              // REAL sensor
-    const bool tempValid = !isnan(temp);
-    if (!tempValid) {
-      Serial.println("⚠ DS18B20 not responding — temperature skipped");
-    } else {
-      Serial.printf("Temperature: %.1f °C\n", temp);
-    }
-
-    float ph   = 7.5  + sin(millis() / 900000.0)   * 0.3;  // SIMULATED 7.2–7.8
-    float tds  = 450.0 + sin(millis() / 1200000.0) * 40.0; // SIMULATED 410–490 ppm
-
-    // --- 3. WRITE LATEST READING TO /tank_status ---
-    // (Worker dashboard reads this for live display)
+    // --- Write live reading to /tank_status ----------------------
     FirebaseJson latestJson;
     latestJson.set("waterlevel", waterPercent);
-    if (tempValid) latestJson.set("temperature", temp);  // REAL sensor
-    latestJson.set("ph", ph);              // SIMULATED until calibration
-    latestJson.set("tds", tds);            // SIMULATED until calibration
+    if (tempValid) latestJson.set("temperature", temp);
+    if (phValid)   latestJson.set("ph", ph);
+    if (tdsValid)  latestJson.set("tds", tds);
     latestJson.set("timestamp", nowMs);
 
     if (Firebase.RTDB.setJSON(&fbdo, "tank_status", &latestJson)) {
@@ -367,13 +385,12 @@ void loop() {
       Serial.println("Failed to send latest: " + fbdo.errorReason());
     }
 
-    // --- 4. APPEND TO HISTORY ---
-    // (Admin web dashboard charts read from /TANK_01/history)
+    // --- Append to history (charts + analytics) ------------------
     FirebaseJson histJson;
     histJson.set("waterlevel", waterPercent);
-    if (tempValid) histJson.set("temperature", temp);  // REAL sensor
-    histJson.set("ph", ph);                // SIMULATED until calibration
-    histJson.set("tds", tds);              // SIMULATED until calibration
+    if (tempValid) histJson.set("temperature", temp);
+    if (phValid)   histJson.set("ph", ph);
+    if (tdsValid)  histJson.set("tds", tds);
     histJson.set("timestamp", nowMs);
 
     String historyPath = String(TANK_ID) + "/history";
@@ -383,14 +400,10 @@ void loop() {
       Serial.println("Failed to append history: " + fbdo.errorReason());
     }
 
-    // --- 5. CHECK THRESHOLDS & SEND ALERTS ---
-    // (The Cloud Function pushes these alerts to worker phones.)
-    // Simulated values stay inside thresholds, so these normally stay
-    // quiet — but they're live, so manipulating a threshold in Firebase
-    // (e.g. tds_max = 400) demonstrably fires a real alert + push.
-    checkAndSendAlert("waterlevel", waterPercent);  // real sensor
-    if (tempValid) checkAndSendAlert("temperature", temp);  // REAL sensor
-    checkAndSendAlert("pH", ph);                    // SIMULATED
-    checkAndSendAlert("tds", tds);                  // SIMULATED
+    // --- Threshold checks -> alerts -> phone push ----------------
+    checkAndSendAlert("waterlevel", waterPercent);
+    if (tempValid) checkAndSendAlert("temperature", temp);
+    if (phValid)   checkAndSendAlert("pH", ph);
+    if (tdsValid)  checkAndSendAlert("tds", tds);
   }
 }
