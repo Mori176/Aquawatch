@@ -1,6 +1,8 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <Firebase_ESP_Client.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
 #include <time.h>
 
 // ═══════════════════════════════════════════════════════════════════
@@ -9,18 +11,16 @@
 //
 //  SENSOR STATUS:
 //    ✅ Water Level — connected (GPIO 17 power, GPIO 34 signal)
-//    🔁 Temperature — SIMULATED (sine wave) until hardware arrives
-//    🔁 pH          — SIMULATED (sine wave) until hardware arrives
-//    🔁 TDS         — SIMULATED (sine wave) until hardware arrives
+//    ✅ Temperature — DS18B20 connected (GPIO 32, OneWire + 4.7kΩ)
+//    🔁 pH          — SIMULATED (sine wave) until calibration done
+//    🔁 TDS         — SIMULATED (sine wave) until calibration done
 //
 //  TO INSTALL A REAL SENSOR (replaces its simulation):
 //    1. Define its pin under section 3.
-//    2. In loop(), replace its sine-wave line with the real read,
-//       e.g. float temp = readDs18b20();
+//    2. In loop(), replace its sine-wave line with the real read.
 //    (Search for "SIMULATED" in this file — all spots are tagged.)
 //
-//  NOTE: The upload cadence is 15 seconds (UPLOAD_INTERVAL) and does
-//        NOT change with the simulation — same two writes per cycle.
+//  NOTE: The upload cadence is dynamic (Firebase config), default 15 s.
 // ═══════════════════════════════════════════════════════════════════
 
 // 1. Your Wi-Fi Credentials
@@ -36,11 +36,11 @@
 
 // 3. Sensor Pins
 // NOTE: When adding new sensors, define their pins here, e.g.:
-//   #define TEMP_PIN    32
 //   #define PH_PIN      35
 //   #define TDS_PIN     33
 #define POWER_PIN  17   // Water level sensor power pin
 #define SIGNAL_PIN 34   // Water level sensor signal pin (analog)
+#define TEMP_PIN   32   // DS18B20 data pin (OneWire, 4.7k pull-up to 3V3)
 
 // 4. Constants
 #define TANK_ID          "TANK_01"
@@ -57,6 +57,10 @@
 FirebaseData fbdo;
 FirebaseAuth auth;
 FirebaseConfig config;
+
+// Temperature sensor (DS18B20 on OneWire)
+OneWire oneWire(TEMP_PIN);
+DallasTemperature ds18b20(&oneWire);
 
 bool signupOK = false;
 
@@ -122,6 +126,21 @@ int readWaterPercent() {
   }
 
   return map(samples[2], 0, 4095, 0, 100);
+}
+
+// Reads the DS18B20. On disconnect/error it returns the last good value,
+// or NAN if no valid reading yet — callers must check isnan() before use.
+// This prevents writing -127 to Firebase (and false critical alerts).
+float lastGoodTempC = NAN;
+
+float readTemperatureC() {
+  ds18b20.requestTemperatures();
+  float t = ds18b20.getTempCByIndex(0);
+  if (t == DEVICE_DISCONNECTED_C || t < -50.0 || t > 100.0) {
+    return lastGoodTempC;  // may still be NAN
+  }
+  lastGoodTempC = t;
+  return t;
 }
 
 // Read thresholds from Firebase /TANK_01/config/thresholds
@@ -247,6 +266,10 @@ void setup() {
   pinMode(POWER_PIN, OUTPUT);
   digitalWrite(POWER_PIN, LOW);
 
+  // Start the DS18B20 at maximum resolution (0.0625 °C steps)
+  ds18b20.begin();
+  ds18b20.setResolution(12);
+
   // Connect to Wi-Fi (20s timeout — restart and retry if it fails,
   // instead of hanging forever on a wrong password / dead router)
   Serial.print("Connecting to Wi-Fi");
@@ -314,26 +337,28 @@ void loop() {
     // --- 2. GET TIMESTAMP ---
     int64_t nowMs = getTimeMs();
 
-    // ── SIMULATED SENSORS (temperature / pH / TDS) ───────────────
-    // NOTE: Hardware not installed yet. These sine-wave formulas make the
-    //       values drift slowly and realistically so the whole pipeline
-    //       (device → Firebase → mobile + web) can be tested and demoed.
-    //       Values are deliberately kept INSIDE the alert thresholds.
-    //       When real sensors arrive: delete these lines and read the
-    //       actual pins instead (see section 3 pin suggestions).
-    //       This costs nothing — millis() is just the chip clock, and
-    //       the upload cadence (15 s) is unchanged.
-    float temp = 28.0 + sin(millis() / 600000.0)   * 1.5;  // 26.5–29.5 °C
-    float ph   = 7.5  + sin(millis() / 900000.0)   * 0.3;  // 7.2–7.8
-    float tds  = 450.0 + sin(millis() / 1200000.0) * 40.0; // 410–490 ppm
+    // ── SENSOR READINGS ──────────────────────────────────────────
+    // Temperature: REAL DS18B20. pH/TDS: SIMULATED (sine waves) until
+    // their hardware is calibrated — delete those lines and read the
+    // actual pins instead when ready (see section 3 pin suggestions).
+    float temp = readTemperatureC();              // REAL sensor
+    const bool tempValid = !isnan(temp);
+    if (!tempValid) {
+      Serial.println("⚠ DS18B20 not responding — temperature skipped");
+    } else {
+      Serial.printf("Temperature: %.1f °C\n", temp);
+    }
+
+    float ph   = 7.5  + sin(millis() / 900000.0)   * 0.3;  // SIMULATED 7.2–7.8
+    float tds  = 450.0 + sin(millis() / 1200000.0) * 40.0; // SIMULATED 410–490 ppm
 
     // --- 3. WRITE LATEST READING TO /tank_status ---
     // (Worker dashboard reads this for live display)
     FirebaseJson latestJson;
     latestJson.set("waterlevel", waterPercent);
-    latestJson.set("temperature", temp);   // SIMULATED until sensor arrives
-    latestJson.set("ph", ph);              // SIMULATED until sensor arrives
-    latestJson.set("tds", tds);            // SIMULATED until sensor arrives
+    if (tempValid) latestJson.set("temperature", temp);  // REAL sensor
+    latestJson.set("ph", ph);              // SIMULATED until calibration
+    latestJson.set("tds", tds);            // SIMULATED until calibration
     latestJson.set("timestamp", nowMs);
 
     if (Firebase.RTDB.setJSON(&fbdo, "tank_status", &latestJson)) {
@@ -346,9 +371,9 @@ void loop() {
     // (Admin web dashboard charts read from /TANK_01/history)
     FirebaseJson histJson;
     histJson.set("waterlevel", waterPercent);
-    histJson.set("temperature", temp);     // SIMULATED until sensor arrives
-    histJson.set("ph", ph);                // SIMULATED until sensor arrives
-    histJson.set("tds", tds);              // SIMULATED until sensor arrives
+    if (tempValid) histJson.set("temperature", temp);  // REAL sensor
+    histJson.set("ph", ph);                // SIMULATED until calibration
+    histJson.set("tds", tds);              // SIMULATED until calibration
     histJson.set("timestamp", nowMs);
 
     String historyPath = String(TANK_ID) + "/history";
@@ -364,7 +389,7 @@ void loop() {
     // quiet — but they're live, so manipulating a threshold in Firebase
     // (e.g. tds_max = 400) demonstrably fires a real alert + push.
     checkAndSendAlert("waterlevel", waterPercent);  // real sensor
-    checkAndSendAlert("temperature", temp);         // SIMULATED
+    if (tempValid) checkAndSendAlert("temperature", temp);  // REAL sensor
     checkAndSendAlert("pH", ph);                    // SIMULATED
     checkAndSendAlert("tds", tds);                  // SIMULATED
   }
