@@ -1,0 +1,28 @@
+@startuml AD2_Worker_Login_Session_Resume
+title AD2 — Worker Login & Session Resume
+
+start
+:App launched;
+:StartupGate: check session\n(Firebase user + 24 h remember-window);
+
+if (Valid remembered session?) then (yes)
+  :Navigate to Dashboard (no login);
+else (no)
+  :Clear stale session (sign out);
+  :Show Login screen;
+
+  repeat
+    :Enter email + password\n(optional: Register / Forgot Key);
+    if (Firebase Auth success?) then (yes)
+    else (no)
+      :Show inline error message;
+    endif
+  repeat while (Auth failed?) is (yes)
+
+  :Store remember-until\n(24 h if "Remember" ticked);
+  :Save FCM device token\nto users/{uid};
+endif
+
+:Dashboard live;
+stop
+@enduml

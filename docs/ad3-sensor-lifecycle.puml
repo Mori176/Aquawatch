@@ -1,0 +1,29 @@
+@startuml AD3_Sensor_Lifecycle_Management
+title AD3 — Sensor Lifecycle Management (Worker)
+
+start
+:Worker opens Sensors tab;
+:Install sensor\n(ID + type + lifespan days);
+:Create TANK_01/sensors/{id}\n(installedAt + expiresAt = countdown start);
+:Auto-log "Sensor X installed" report;
+
+repeat
+  :Countdown runs\n(remaining = expiresAt - now);
+  if (Computed status changed?\npriority: inactive > replace > active) then (yes)
+    :Log transition alert\n(warning = replace\ncritical = inactive);
+    :Echo status to sensor node\n(admin dashboard sees it);
+    :Cloud Function pushes\nnotification to workers;
+  else (no)
+  endif
+repeat while (Sensor still installed?) is (yes)
+
+if (Worker confirms removal\n(button / swipe)?) then (yes)
+  :Hide card immediately (same frame);
+  :Write removedAt + status inactive\n+ critical alert;
+  :Auto-log "Sensor X removed" report;
+else (no — keep monitoring)
+endif
+
+:Lifecycle recorded;
+stop
+@enduml

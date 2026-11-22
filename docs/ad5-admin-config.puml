@@ -1,0 +1,23 @@
+@startuml AD5_Admin_Threshold_Configuration
+title AD5 — Admin Threshold Configuration (Web → All Clients)
+
+start
+:Admin opens System Configuration;
+:Edit ph / temp / tds / waterlevel\nmin-max values;
+:Save → flat-contract write to\nTANK_01/config/thresholds;
+
+if (Writer is admins/{uid} = true?\n(security rules check)) then (no)
+  :Write rejected by security rules;
+else (yes)
+  fork
+    :Mobile: STABLE / CAUTION tags\nre-evaluate instantly (stream);
+  fork again
+    :ESP32: fetches new thresholds\n(within 60 s) for alert evaluation;
+  fork again
+    :Web: KPI safe-range labels update;
+  end fork
+endif
+
+:System-wide standard updated;
+stop
+@enduml

@@ -1,0 +1,48 @@
+@startuml AD1_ESP32_Reading_Alert_Cycle
+' Render at https://plantuml.com/plantuml — paste this whole file.
+title AD1 — ESP32 Reading & Alert Cycle
+
+|ESP32 Firmware|
+start
+:Power On;
+:Connect to Wi-Fi\n(20s timeout; restart on fail);
+:Anonymous Firebase sign-in;
+:Sync time via NTP;
+:Fetch thresholds + reading interval;
+
+repeat
+  :Wait for next scheduled reading\n(dynamic interval, default 15 s);
+
+  :Read all 4 sensors\n(median-of-5 filtering);
+  if (All sensor responses valid?) then (no)
+    :Log "not responding" warning;\nretain last good value;
+  else (yes)
+  endif
+
+  |Firebase RTDB|
+  :Update tank_status (live node);
+  :Append reading to TANK_01/history;
+
+  |ESP32 Firmware|
+  if (Value outside admin thresholds?) then (yes)
+    if (Per-parameter cooldown\n(5 min) elapsed?) then (yes)
+      |Firebase RTDB|
+      :Push alert entry\n(parameter, value, severity, actionTaken);
+
+      |Cloud Function|
+      :onAlertCreated trigger fires;
+      :Collect fcmTokens of all users;
+      :FCM multicast push;
+
+      |Worker Mobile App|
+      :Notification received\n(banner / sound / vibration);
+    else (no — suppressed)
+    endif
+  else (no)
+  endif
+
+  |ESP32 Firmware|
+  :Every 60 s: refresh\nthresholds + interval;
+repeat while (System running?) is (yes)
+stop
+@enduml

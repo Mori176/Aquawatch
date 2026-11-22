@@ -1,0 +1,30 @@
+@startuml AD4_Worker_Report_Submission
+title AD4 — Worker Report Submission (with photos)
+
+start
+:Worker opens Report tab;
+:Fill issue + sensor ID + notes;
+
+if (Attach visuals?) then (yes)
+  if (Source?) then (camera)
+    :Take photo (ImageSource.camera);
+  else (gallery)
+    :Pick images (pickMultiImage);
+  endif
+  :Show thumbnails (removable);
+else (no)
+endif
+
+if (Issue filled and valid?) then (yes)
+else (no)
+  :Fix fields;
+  -> re-validate;
+endif
+
+:Upload images to Firebase Storage\n(reports/{id}/image_n.jpg, 70% JPEG);
+:Push report {issue, sensorId,\nnotes, imageUrls} to TANK_01/reports;
+:Admin web Receive tab updates (realtime);
+:Clear form + success snackbar;
+:Entry appears in worker Report History\nand admin Receive inbox;
+stop
+@enduml
