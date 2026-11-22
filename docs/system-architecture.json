@@ -1,0 +1,181 @@
+{
+  "title": "AquaWatch — System Architecture",
+  "system": "IoT-Based Water Quality Monitoring and Predictive Alert System for Seabass Aquaculture",
+  "architectureStyle": "Event-driven, cloud-centric IoT (Firebase as message bus / single source of truth)",
+  "designPrinciple": "All components communicate exclusively through Firebase. No component talks directly to another, so any client can be replaced or added without touching the rest of the system.",
+
+  "layers": [
+    {
+      "id": "perception",
+      "name": "Perception Layer (Sensing)",
+      "description": "Physical data acquisition at the fish tank.",
+      "components": [
+        "ESP32 DevKit V1 (DOIT) — microcontroller with integrated Wi-Fi",
+        "Resistive water-level strip (GPIO 17 power / GPIO 34 signal)",
+        "DS18B20 waterproof temperature probe (GPIO 32, OneWire)",
+        "pH module + BNC probe (GPIO 35, analog)",
+        "TDS module + probe (GPIO 33, analog, temperature-compensated)"
+      ],
+      "processes": [
+        "Median-of-5 analog sampling (noise rejection)",
+        "Conversion formulas + calibration constants",
+        "Disconnect guards (last-known-good retention)",
+        "Pulsed power to water-level sensor (anti-corrosion)"
+      ]
+    },
+    {
+      "id": "network",
+      "name": "Network Layer (Transport)",
+      "description": "Connectivity between device, cloud, and clients.",
+      "components": [
+        "Wi-Fi 2.4 GHz (home router / hotspot)",
+        "NTP time synchronization (pool.ntp.org, UTC+8)",
+        "HTTPS/TLS to Firebase endpoints",
+        "FCM (Firebase Cloud Messaging) transport for pushes"
+      ]
+    },
+    {
+      "id": "cloud",
+      "name": "Cloud Layer (Backend)",
+      "description": "Data persistence, business rules, and serverless logic.",
+      "components": [
+        "Firebase Realtime Database (asia-southeast1) — single source of truth",
+        "Firebase Authentication — email/password (workers), anonymous (ESP32)",
+        "Firebase Storage — report photo evidence",
+        "Cloud Function: onAlertCreated (asia-southeast1, Node.js 22) — alert fan-out to FCM",
+        "Security Rules — role-based write restrictions, self-scoped user access"
+      ]
+    },
+    {
+      "id": "application",
+      "name": "Application Layer (Clients)",
+      "description": "End-user interfaces consuming realtime streams.",
+      "components": [
+        "Worker mobile app (Flutter, Android) — live monitoring, alerts, sensors, reports, trends, frequency control",
+        "Admin web dashboard (vanilla JS + Firebase modular SDK) — configuration, analytics, reports, export"
+      ]
+    },
+    {
+      "id": "user",
+      "name": "User Layer (Actors)",
+      "description": "Humans interacting with the system.",
+      "components": [
+        "Farm Worker — operates via mobile app; takes corrective action on alerts",
+        "Administrator — operates via web dashboard; defines standards and oversees operations"
+      ]
+    }
+  ],
+
+  "dataflows": [
+    {
+      "id": "DF1",
+      "name": "Live Telemetry",
+      "direction": "ESP32 -> Firebase",
+      "path": "sensors -> median filter -> conversion -> tank_status (update) + TANK_01/history (append)",
+      "frequency": "Every sampling interval (default 15 s, configurable 15 s - 24 h)",
+      "payload": "{ waterlevel, temperature, ph, tds, timestamp(ms) }"
+    },
+    {
+      "id": "DF2",
+      "name": "Live Dashboard Updates",
+      "direction": "Firebase -> Mobile & Web",
+      "path": "tank_status.onValue -> StreamBuilder / listener -> KPI cards + status tags",
+      "frequency": "Realtime (push-based, no polling)",
+      "payload": "Same reading object"
+    },
+    {
+      "id": "DF3",
+      "name": "Alert Pipeline",
+      "direction": "ESP32 (or mobile app) -> Firebase -> Cloud Function -> Devices",
+      "path": "threshold breach (severity + 5-min cooldown) -> TANK_01/alerts push -> onAlertCreated trigger -> FCM multicast -> phone notification",
+      "payload": "{ parameter, value, actionTaken, severity, timestamp }"
+    },
+    {
+      "id": "DF4",
+      "name": "Configuration Sync",
+      "direction": "Admin Web -> Firebase -> ESP32 + Mobile",
+      "path": "thresholds form -> TANK_01/config/thresholds (admin-only by rules) -> 60 s ESP32 fetch + instant mobile stream",
+      "payload": "{ ph_min, ph_max, temp_min, temp_max, tds_max, waterlevel_min, waterlevel_max, updated_at }"
+    },
+    {
+      "id": "DF5",
+      "name": "Reading Frequency Control",
+      "direction": "Mobile App -> Firebase -> ESP32",
+      "path": "frequency picker -> TANK_01/config/interval_seconds -> 60 s ESP32 config refresh applies it",
+      "payload": "interval in seconds (10 s floor)"
+    },
+    {
+      "id": "DF6",
+      "name": "Incident Reporting",
+      "direction": "Mobile -> Firebase Storage + RTDB -> Admin Web",
+      "path": "camera/gallery capture -> Storage upload (reports/{id}/image_n.jpg) -> TANK_01/reports push -> admin Receive tab (realtime)",
+      "payload": "{ issue, sensorId, notes, imageUrls[], timestamp }"
+    },
+    {
+      "id": "DF7",
+      "name": "Admin Messaging",
+      "direction": "Admin Web -> Firebase -> (worker reader)",
+      "path": "Send form -> TANK_01/reports/sent push",
+      "payload": "{ subject, message, sensorId, workerId, timestamp }"
+    },
+    {
+      "id": "DF8",
+      "name": "Sensor Lifecycle",
+      "direction": "Mobile -> Firebase -> Admin Web + Cloud Function",
+      "path": "install/remove actions -> TANK_01/sensors node (countdown, computed status echoed) -> transition alerts -> auto-logged reports",
+      "payload": "{ sensorId, type, installedAt, lifespanDays, expiresAt, status, removedAt? }"
+    },
+    {
+      "id": "DF9",
+      "name": "Predictive Analytics",
+      "direction": "Firebase -> Mobile & Web (computed client-side)",
+      "path": "TANK_01/history -> linear regression on TDS trend -> days-until-water-change estimate + forecast chart",
+      "payload": "days estimate + slope (ppm/day) vs admin tds_max"
+    },
+    {
+      "id": "DF10",
+      "name": "Data Export",
+      "direction": "Firebase -> Admin Web",
+      "path": "TANK_01/history read -> CSV generation -> browser download",
+      "payload": "timestamp, temp, ph, tds, waterLevel rows"
+    }
+  ],
+
+  "deployment": {
+    "device": {
+      "location": "Tank-side, inside PVC junction box (splash-resistant, drip loops, silica gel)",
+      "power": "5V 2A USB adapter",
+      "firmware": "Arduino C++ (Firebase ESP Client, OneWire, DallasTemperature)"
+    },
+    "backend": {
+      "platform": "Google Firebase (Blaze plan, within free-tier usage)",
+      "region": "asia-southeast1 (Singapore) — co-located RTDB + Cloud Function",
+      "functionsRuntime": "Node.js 22",
+      "security": "RTDB rules: users self-access only; config writes admin-gated; tank nodes authenticated access"
+    },
+    "mobileClient": {
+      "platform": "Android (Flutter 3.x, Dart)",
+      "packages": ["firebase_core", "firebase_auth", "firebase_database", "firebase_messaging", "firebase_storage", "image_picker", "shared_preferences", "fl_chart"],
+      "distribution": "Debug build via USB (flutter run)"
+    },
+    "webClient": {
+      "platform": "Static vanilla HTML/CSS/JS + Firebase modular SDK v10 (CDN), Chart.js",
+      "hosting": "Firebase Hosting",
+      "accessControl": "Admins listed at admins/{uid} = true; non-admins signed out automatically"
+    }
+  },
+
+  "repositoryStructure": {
+    "main": "Landing README (project overview)",
+    "MobileApp": "Flutter worker app + ESP32 firmware + Cloud Functions source",
+    "WebApp": "Admin dashboard (teammate branch)"
+  },
+
+  "keyDecisions": [
+    "Firebase as the sole integration point — no client-to-client communication, enabling independent evolution of each component",
+    "Monitoring + alerting scope (no actuators/relay): alerts direct human corrective action, closing the loop via worker incident reports",
+    "Simulated sensor values during pipeline development, replaced by real hardware as each sensor was verified (documented transition)",
+    "Flat snake_case threshold contract as the configuration standard, enforced across web writes and device/app reads",
+    "Serverless push fan-out via Cloud Function instead of client-side notification dispatch"
+  ]
+}
